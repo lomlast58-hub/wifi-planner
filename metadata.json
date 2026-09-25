@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix DICT Free Public WiFi Planner \u0026 Simulator",
+  "description": "Interactive network planning and simulation tool by TEPBIZ™. Design physical sites, wire backbone to client devices with 90-degree orthogonal cabling, configure IP subnets, and simulate live traffic with an intelligent AI troubleshooting assistant.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
