@@ -44,6 +44,12 @@ interface NetworkCanvasProps {
   onUpdateNode: (id: string, updates: Partial<NetworkNode>) => void;
   onDeleteNode: (id: string) => void;
   onUpdateStructure: (id: string, updates: Partial<Structure>) => void;
+  onMoveStructureWithNodes?: (
+    structureId: string,
+    newX: number,
+    newY: number,
+    nodePositions: { id: string; x: number; y: number }[]
+  ) => void;
   onDeleteStructure: (id: string) => void;
   onAddCable: (fromNodeId: string, fromPortId: string, toNodeId: string, toPortId: string, type: CableType, lengthMeters?: number) => void;
   onUpdateCable: (id: string, updates: Partial<CableRun>) => void;
@@ -189,6 +195,7 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
   onUpdateNode,
   onDeleteNode,
   onUpdateStructure,
+  onMoveStructureWithNodes,
   onDeleteStructure,
   onAddCable,
   onUpdateCable,
@@ -206,11 +213,25 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
 
-  // Node Dragging state
-  const [draggedNode, setDraggedNode] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null);
+  // Node Dragging state (tracks initial position and structure containment)
+  const [draggedNode, setDraggedNode] = useState<{
+    id: string;
+    offsetX: number;
+    offsetY: number;
+    initialX: number;
+    initialY: number;
+    structureId?: string | null;
+  } | null>(null);
 
-  // Structure Dragging & Resizing state
-  const [draggedStructure, setDraggedStructure] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null);
+  // Structure Dragging & Resizing state (tracks all contained equipment nodes for grouped movement)
+  const [draggedStructure, setDraggedStructure] = useState<{
+    id: string;
+    offsetX: number;
+    offsetY: number;
+    initialStructX: number;
+    initialStructY: number;
+    nodes: { id: string; relX: number; relY: number }[];
+  } | null>(null);
   const [resizingStructure, setResizingStructure] = useState<{ id: string; startWidth: number; startHeight: number; startX: number; startY: number } | null>(null);
 
   // Cable drawing state
@@ -254,10 +275,6 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
       return 'fiber';
     }
 
-    if (port1 === 'ground_lug' && port2 === 'ground_lug') {
-      return 'grounding';
-    }
-
     const isEth1 = port1 === 'rj45' || port1 === 'rj45_poe_in' || port1 === 'rj45_poe_out';
     const isEth2 = port2 === 'rj45' || port2 === 'rj45_poe_in' || port2 === 'rj45_poe_out';
 
@@ -268,37 +285,66 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
     return null;
   };
 
-  // Port coordinate calculation
+  // Exact layout constants for mathematical port alignment
+  const NODE_WIDTH = 190;
+  const NODE_HEADER_HEIGHT = 38;
+  const NODE_CONTENT_PADDING_TOP = 8;
+  const NODE_IP_BADGE_HEIGHT = 20;
+  const NODE_IP_MARGIN_BOTTOM = 6;
+  const PORT_ROW_HEIGHT = 22;
+  const PORT_ROW_GAP = 4; // space-y-1 in Tailwind is 4px
+  const PORT_SOCKET_CENTER_X = 171; // 190px - 8px (container pr) - 4px (row pr) - 7px (half socket width)
+
+  // Port coordinate calculation (all ports aligned to the exact right-side sockets)
   const getPortCoordinates = (nodeId: string, portId: string) => {
     const node = nodes.find((n) => n.id === nodeId);
     if (!node) return { x: 0, y: 0 };
-
-    // Specialized physical horizontal PoE Injector adapter box
-    if (node.type === 'poe_injector') {
-      if (portId === 'data_in') {
-        return { x: node.position.x + 8, y: node.position.y + 44 };
-      }
-      if (portId === 'poe_out') {
-        return { x: node.position.x + 150 - 8, y: node.position.y + 44 };
-      }
-      if (portId === 'pwr_in') {
-        return { x: node.position.x + 150 - 8, y: node.position.y + 76 };
-      }
-    }
 
     const spec = EQUIPMENT_CATALOG[node.type];
     const ports = spec?.ports || [];
     const index = ports.findIndex((p) => p.id === portId);
 
-    const nodeWidth = 190;
-    const nodeHeaderHeight = 44;
-    const portAreaStartY = nodeHeaderHeight + 10;
-    const portRowHeight = 22;
+    const hasIp = Boolean(node.network?.ip);
+    const port0StartY =
+      NODE_HEADER_HEIGHT +
+      NODE_CONTENT_PADDING_TOP +
+      (hasIp ? NODE_IP_BADGE_HEIGHT + NODE_IP_MARGIN_BOTTOM : 0);
 
-    const y = node.position.y + portAreaStartY + (index >= 0 ? index * portRowHeight + 10 : 20);
-    const x = node.position.x + nodeWidth - 10;
+    const portRowCenterY = port0StartY + PORT_ROW_HEIGHT / 2;
+    const portSpacing = PORT_ROW_HEIGHT + PORT_ROW_GAP;
+
+    const y = node.position.y + portRowCenterY + (index >= 0 ? index * portSpacing : 0);
+    const x = node.position.x + PORT_SOCKET_CENTER_X;
 
     return { x, y };
+  };
+
+  // Helper to start dragging a structure with all its contained nodes grouped
+  const startDraggingStructure = (structId: string, clientX: number, clientY: number) => {
+    if (mode === 'simulate') return;
+    const struct = structures.find((s) => s.id === structId);
+    if (!struct) return;
+    const coords = screenToCanvas(clientX, clientY);
+    const insideNodes = nodes.filter(
+      (n) =>
+        n.structureId === struct.id ||
+        (n.position.x + 95 >= struct.x &&
+          n.position.x + 95 <= struct.x + struct.width &&
+          n.position.y + 30 >= struct.y &&
+          n.position.y <= struct.y + struct.height)
+    );
+    setDraggedStructure({
+      id: struct.id,
+      offsetX: coords.x - struct.x,
+      offsetY: coords.y - struct.y,
+      initialStructX: struct.x,
+      initialStructY: struct.y,
+      nodes: insideNodes.map((n) => ({
+        id: n.id,
+        relX: n.position.x - struct.x,
+        relY: n.position.y - struct.y,
+      })),
+    });
   };
 
   // Mouse wheel: auto zoom in or out
@@ -318,6 +364,7 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
     // Check if clicked element is an interactive object that should not trigger pan
     const isInteractive =
       target.closest('[data-node-id]') ||
+      target.closest('[data-structure-id]') ||
       target.closest('[data-structure-header]') ||
       target.closest('[data-structure-resize]') ||
       target.closest('button') ||
@@ -364,38 +411,65 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
 
       // Drag node (Fixed cable length; protected structure header title area)
       // Clamped so it NEVER enters or merges with the left sidebar!
+      // If node is inside a structure, it is clamped inside the structure box and cannot leave ("di sila lalabas ng sturcture box")
       if (draggedNode && mode === 'design') {
         let rawX = Math.round((coords.x - draggedNode.offsetX) / 10) * 10;
         let rawY = Math.round((coords.y - draggedNode.offsetY) / 10) * 10;
 
-        // Prevent crossing into left sidebar!
-        // On screen: screenX = rect.left + pan.x + rawX * zoom >= rect.left + 16px
-        // Therefore: rawX >= (16 - pan.x) / zoom
         const minAllowedX = Math.round((16 - pan.x) / zoom / 10) * 10;
         const minAllowedY = Math.round((16 - pan.y) / zoom / 10) * 10;
         rawX = Math.max(minAllowedX, rawX);
         rawY = Math.max(minAllowedY, rawY);
 
-        // Find if this node position is inside any structure block
-        const struct = structures.find(
+        // If this node belongs to or started inside a structure, clamp it so it NEVER exits that structure
+        const parentStruct = structures.find(
           (s) =>
-            rawX + 95 >= s.x &&
-            rawX + 95 <= s.x + s.width &&
-            rawY + 30 >= s.y &&
-            rawY <= s.y + s.height
+            s.id === draggedNode.structureId ||
+            (draggedNode.initialX + 95 >= s.x &&
+              draggedNode.initialX + 95 <= s.x + s.width &&
+              draggedNode.initialY + 30 >= s.y &&
+              draggedNode.initialY <= s.y + s.height)
         );
 
-        // Structure title area row occupies [struct.y, struct.y + 44].
-        if (struct && rawY < struct.y + 44) {
-          rawY = struct.y + 48;
+        if (parentStruct) {
+          const nodeWidth = 190;
+          const targetNode = nodes.find((n) => n.id === draggedNode.id);
+          const nodeSpec = targetNode ? EQUIPMENT_CATALOG[targetNode.type] : undefined;
+          const nodePortsCount = nodeSpec?.ports.length || 2;
+          const hasIp = Boolean(targetNode?.network?.ip);
+          const calculatedNodeHeight =
+            NODE_HEADER_HEIGHT +
+            NODE_CONTENT_PADDING_TOP +
+            (hasIp ? NODE_IP_BADGE_HEIGHT + NODE_IP_MARGIN_BOTTOM : 0) +
+            nodePortsCount * (PORT_ROW_HEIGHT + PORT_ROW_GAP) +
+            10;
+
+          const minX = parentStruct.x + 8;
+          const maxX = Math.max(minX, parentStruct.x + parentStruct.width - nodeWidth - 8);
+          const minY = parentStruct.y + 48; // below glowing header
+          const maxY = Math.max(minY, parentStruct.y + parentStruct.height - calculatedNodeHeight - 8);
+
+          rawX = Math.max(minX, Math.min(maxX, rawX));
+          rawY = Math.max(minY, Math.min(maxY, rawY));
+        } else {
+          // If free-floating, prevent covering any structure title row
+          const struct = structures.find(
+            (s) =>
+              rawX + 95 >= s.x &&
+              rawX + 95 <= s.x + s.width &&
+              rawY + 30 >= s.y &&
+              rawY <= s.y + s.height
+          );
+          if (struct && rawY < struct.y + 44) {
+            rawY = struct.y + 48;
+          }
         }
 
         onUpdateNodePosition(draggedNode.id, rawX, rawY);
         return;
       }
 
-      // Drag structure
-      // Clamped so it NEVER enters or merges with the left sidebar!
+      // Drag structure with all equipment boxes inside it grouped together
       if (draggedStructure && mode === 'design') {
         let rawX = Math.round((coords.x - draggedStructure.offsetX) / 10) * 10;
         let rawY = Math.round((coords.y - draggedStructure.offsetY) / 10) * 10;
@@ -405,10 +479,23 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
         rawX = Math.max(minStructX, rawX);
         rawY = Math.max(minStructY, rawY);
 
-        onUpdateStructure(draggedStructure.id, {
-          x: rawX,
-          y: rawY,
-        });
+        const updatedNodes = draggedStructure.nodes.map((n) => ({
+          id: n.id,
+          x: rawX + n.relX,
+          y: rawY + n.relY,
+        }));
+
+        if (onMoveStructureWithNodes) {
+          onMoveStructureWithNodes(draggedStructure.id, rawX, rawY, updatedNodes);
+        } else {
+          onUpdateStructure(draggedStructure.id, {
+            x: rawX,
+            y: rawY,
+          });
+          for (const un of updatedNodes) {
+            onUpdateNodePosition(un.id, un.x, un.y);
+          }
+        }
         return;
       }
 
@@ -503,6 +590,7 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
     hoveredPort,
     onUpdateNodePosition,
     onUpdateStructure,
+    onMoveStructureWithNodes,
     onAddCable,
   ]);
 
@@ -520,6 +608,8 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
     }
 
     // Drag node (Fixed cable length; protected structure header title area)
+    // Clamped so it NEVER enters or merges with the left sidebar!
+    // If inside a structure box, it cannot leave the structure box ("di sila lalabas ng sturcture box")
     if (draggedNode && mode === 'design') {
       let rawX = Math.round((coords.x - draggedNode.offsetX) / 10) * 10;
       let rawY = Math.round((coords.y - draggedNode.offsetY) / 10) * 10;
@@ -529,25 +619,55 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
       rawX = Math.max(minAllowedX, rawX);
       rawY = Math.max(minAllowedY, rawY);
 
-      // Find if this node position is inside any structure block
-      const struct = structures.find(
+      // If this node belongs to or started inside a structure, clamp it so it NEVER exits that structure
+      const parentStruct = structures.find(
         (s) =>
-          rawX + 95 >= s.x &&
-          rawX + 95 <= s.x + s.width &&
-          rawY + 30 >= s.y &&
-          rawY <= s.y + s.height
+          s.id === draggedNode.structureId ||
+          (draggedNode.initialX + 95 >= s.x &&
+            draggedNode.initialX + 95 <= s.x + s.width &&
+            draggedNode.initialY + 30 >= s.y &&
+            draggedNode.initialY <= s.y + s.height)
       );
 
-      // Structure title area row occupies [struct.y, struct.y + 44].
-      if (struct && rawY < struct.y + 44) {
-        rawY = struct.y + 48;
+      if (parentStruct) {
+        const nodeWidth = 190;
+        const targetNode = nodes.find((n) => n.id === draggedNode.id);
+        const nodeSpec = targetNode ? EQUIPMENT_CATALOG[targetNode.type] : undefined;
+        const nodePortsCount = nodeSpec?.ports.length || 2;
+        const hasIp = Boolean(targetNode?.network?.ip);
+        const calculatedNodeHeight =
+          NODE_HEADER_HEIGHT +
+          NODE_CONTENT_PADDING_TOP +
+          (hasIp ? NODE_IP_BADGE_HEIGHT + NODE_IP_MARGIN_BOTTOM : 0) +
+          nodePortsCount * (PORT_ROW_HEIGHT + PORT_ROW_GAP) +
+          10;
+
+        const minX = parentStruct.x + 8;
+        const maxX = Math.max(minX, parentStruct.x + parentStruct.width - nodeWidth - 8);
+        const minY = parentStruct.y + 48; // below glowing header
+        const maxY = Math.max(minY, parentStruct.y + parentStruct.height - calculatedNodeHeight - 8);
+
+        rawX = Math.max(minX, Math.min(maxX, rawX));
+        rawY = Math.max(minY, Math.min(maxY, rawY));
+      } else {
+        // If free-floating, prevent covering any structure title row
+        const struct = structures.find(
+          (s) =>
+            rawX + 95 >= s.x &&
+            rawX + 95 <= s.x + s.width &&
+            rawY + 30 >= s.y &&
+            rawY <= s.y + s.height
+        );
+        if (struct && rawY < struct.y + 44) {
+          rawY = struct.y + 48;
+        }
       }
 
       onUpdateNodePosition(draggedNode.id, rawX, rawY);
       return;
     }
 
-    // Drag structure
+    // Drag structure with all equipment boxes inside it grouped together
     if (draggedStructure && mode === 'design') {
       let rawX = Math.round((coords.x - draggedStructure.offsetX) / 10) * 10;
       let rawY = Math.round((coords.y - draggedStructure.offsetY) / 10) * 10;
@@ -557,10 +677,23 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
       rawX = Math.max(minStructX, rawX);
       rawY = Math.max(minStructY, rawY);
 
-      onUpdateStructure(draggedStructure.id, {
-        x: rawX,
-        y: rawY,
-      });
+      const updatedNodes = draggedStructure.nodes.map((n) => ({
+        id: n.id,
+        x: rawX + n.relX,
+        y: rawY + n.relY,
+      }));
+
+      if (onMoveStructureWithNodes) {
+        onMoveStructureWithNodes(draggedStructure.id, rawX, rawY, updatedNodes);
+      } else {
+        onUpdateStructure(draggedStructure.id, {
+          x: rawX,
+          y: rawY,
+        });
+        for (const un of updatedNodes) {
+          onUpdateNodePosition(un.id, un.x, un.y);
+        }
+      }
       return;
     }
 
@@ -818,40 +951,58 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
         }}
       >
         {/* 1. Structures Layer (Buildings with Dedicated Glowing Title Area Row) */}
-        {structures.map((struct) => (
-          <div
-            key={struct.id}
-            data-structure-id={struct.id}
-            style={{
-              transform: `translate(${struct.x}px, ${struct.y}px)`,
-              width: `${struct.width}px`,
-              height: `${struct.height}px`,
-            }}
-            className={`absolute rounded-2xl border p-0 shadow-xl backdrop-blur-xs transition-colors group ${
-              isLight
-                ? 'border-slate-300 bg-white/70 shadow-slate-300/40'
-                : 'border-slate-800/90 bg-slate-900/35 shadow-black/40'
-            }`}
-          >
-            {/* Dedicated Structure Title Area Row (Glowing Letters, Protected Zone) */}
+        {structures.map((struct) => {
+          const isStructBeingDragged = draggedStructure?.id === struct.id;
+          return (
             <div
-              data-structure-header={struct.id}
+              key={struct.id}
+              data-structure-id={struct.id}
               onMouseDown={(e) => {
                 if (mode === 'simulate') return;
+                const target = e.target as HTMLElement;
+                if (
+                  target.closest('input') ||
+                  target.closest('button') ||
+                  target.closest('[data-structure-resize]') ||
+                  target.closest('[data-node-id]') ||
+                  target.closest('[data-cable-id]')
+                ) {
+                  return;
+                }
                 e.stopPropagation();
-                const coords = screenToCanvas(e.clientX, e.clientY);
-                setDraggedStructure({
-                  id: struct.id,
-                  offsetX: coords.x - struct.x,
-                  offsetY: coords.y - struct.y,
-                });
+                startDraggingStructure(struct.id, e.clientX, e.clientY);
               }}
-              className={`h-11 px-3 rounded-t-2xl border-b flex items-center justify-between cursor-grab active:cursor-grabbing transition-colors ${
+              style={{
+                transform: `translate(${struct.x}px, ${struct.y}px)`,
+                width: `${struct.width}px`,
+                height: `${struct.height}px`,
+              }}
+              className={`absolute rounded-2xl border p-0 shadow-sm transition-colors group cursor-grab active:cursor-grabbing ${
                 isLight
-                  ? 'bg-slate-100/90 border-slate-300/80'
-                  : 'bg-slate-950/85 border-cyan-500/30'
+                  ? isStructBeingDragged
+                    ? 'border-sky-400 bg-sky-50/10 ring-2 ring-sky-400/30 opacity-75'
+                    : 'border-slate-300/70 bg-white/15 shadow-slate-300/20'
+                  : isStructBeingDragged
+                  ? 'border-cyan-400/80 bg-cyan-950/10 ring-2 ring-cyan-400/30 opacity-75'
+                  : 'border-slate-800/60 bg-slate-900/15 shadow-black/20'
               }`}
             >
+              {/* Dedicated Structure Title Area Row (Glowing Letters, Protected Zone) */}
+              <div
+                data-structure-header={struct.id}
+                onMouseDown={(e) => {
+                  if (mode === 'simulate') return;
+                  const target = e.target as HTMLElement;
+                  if (target.closest('input') || target.closest('button')) return;
+                  e.stopPropagation();
+                  startDraggingStructure(struct.id, e.clientX, e.clientY);
+                }}
+                className={`h-11 px-3 rounded-t-2xl border-b flex items-center justify-between cursor-grab active:cursor-grabbing transition-colors ${
+                  isLight
+                    ? 'bg-slate-100/40 border-slate-300/70'
+                    : 'bg-slate-950/40 border-cyan-500/30'
+                }`}
+              >
               <div className="flex items-center gap-2 min-w-0">
                 <GripHorizontal className="w-3.5 h-3.5 text-cyan-400 group-hover:text-cyan-300 shrink-0" />
                 
@@ -908,7 +1059,8 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
 
         {/* 2. SVG Cabling Layer (STRAIGHT LINES WITH 90-DEGREE CURVED BENDS) */}
         <svg className="absolute top-0 left-0 w-[5000px] h-[5000px] pointer-events-none z-10 overflow-visible">
@@ -1012,7 +1164,7 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
             );
           })()}
 
-          {/* 2c. All Cable Length Badges Layer (RENDERED ON TOP OF ALL LINES - NEVER COVERED) */}
+          {/* 2c. All Cable Length Badges Layer (RENDERED ON TOP OF ALL LINES - NO SHADE, FULLY TRANSPARENT) */}
           <g className="cable-badges-layer pointer-events-auto">
             {cableRoutes.map((cr) => (
               <g
@@ -1030,27 +1182,26 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
                 }}
                 className="cursor-pointer group select-none"
               >
-                {/* High-contrast solid pill badge that completely obscures anything underneath */}
+                {/* Invisible hit target for easy clicking without blocking view behind */}
                 <rect
-                  x="-26"
+                  x="-24"
                   y="-12"
-                  width="52"
+                  width="48"
                   height="24"
-                  rx="12"
-                  className={`${
-                    isLight
-                      ? 'fill-white stroke-sky-600 hover:stroke-sky-500 shadow-md'
-                      : 'fill-slate-950 stroke-sky-500/90 hover:stroke-cyan-300 shadow-2xl'
-                  } transition-all`}
-                  strokeWidth="1.5"
+                  fill="transparent"
+                  stroke="none"
                 />
+                {/* Measurement value text: Completely transparent background, no shade or drop shadow box */}
                 <text
                   x="0"
                   y="4"
                   textAnchor="middle"
-                  className={`text-[11px] font-mono font-bold select-none cursor-pointer ${
-                    isLight ? 'fill-sky-900' : 'fill-sky-200'
+                  className={`text-[11px] font-mono font-bold select-none cursor-pointer group-hover:scale-115 transition-transform ${
+                    isLight ? 'fill-sky-800' : 'fill-cyan-300'
                   }`}
+                  style={{
+                    textShadow: 'none',
+                  }}
                 >
                   {Math.round(cr.cable.lengthMeters)}m
                 </text>
@@ -1059,227 +1210,15 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
           </g>
         </svg>
 
-        {/* 3. Equipment Nodes Layer (SEMI-TRANSPARENT BOXES so lines connected behind are visible) */}
+        {/* 3. Equipment Nodes Layer (HIGH-TRANSPARENCY BOXES so lines connected behind remain clearly visible at all times) */}
         {nodes.map((node) => {
           const spec = EQUIPMENT_CATALOG[node.type];
           const isSelected = selectedNodeId === node.id;
           const isRed = mode === 'simulate' && node.status === 'red';
           const isYellow = mode === 'simulate' && node.status === 'yellow';
           const isProjectedTarget = projectedFix?.targetNodeId === node.id;
-          const needsGrounding = spec?.isOutdoor || spec?.ports.some((p) => p.type === 'ground_lug');
 
-          // Specialized physical horizontal PoE Injector adapter box with Left & Right ports
-          if (node.type === 'poe_injector') {
-            const dataInConnected = cables.some(
-              (c) => (c.fromNodeId === node.id && c.fromPortId === 'data_in') || (c.toNodeId === node.id && c.toPortId === 'data_in')
-            );
-            const poeOutConnected = cables.some(
-              (c) => (c.fromNodeId === node.id && c.fromPortId === 'poe_out') || (c.toNodeId === node.id && c.toPortId === 'poe_out')
-            );
-            const pwrConnected = cables.some(
-              (c) => (c.fromNodeId === node.id && c.fromPortId === 'pwr_in') || (c.toNodeId === node.id && c.toPortId === 'pwr_in')
-            );
-
-            return (
-              <div
-                key={node.id}
-                data-node-id={node.id}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectNode(node.id);
-                  if (isRed && onOpenDiagnosisForNode) {
-                    onOpenDiagnosisForNode(node.id);
-                  }
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setNodeContextMenu({
-                    nodeId: node.id,
-                    x: e.clientX,
-                    y: e.clientY,
-                  });
-                  setCableContextMenu(null);
-                  onSelectNode(node.id);
-                }}
-                style={{
-                  transform: `translate(${node.position.x}px, ${node.position.y}px)`,
-                  width: '150px',
-                }}
-                className={`absolute rounded-xl border backdrop-blur-md shadow-xl transition-all select-none z-20 ${
-                  isLight
-                    ? 'bg-white/90 text-slate-900 border-slate-300'
-                    : 'bg-slate-900/90 text-slate-100 border-slate-750'
-                } ${
-                  isProjectedTarget
-                    ? 'border-rose-500 ring-4 ring-rose-500/50 shadow-rose-950/80 scale-105 animate-pulse'
-                    : isSelected
-                    ? 'border-sky-500 ring-2 ring-sky-500/30 shadow-sky-950/50'
-                    : isRed
-                    ? 'border-rose-600/90 ring-2 ring-rose-500/30'
-                    : 'hover:border-sky-400/80'
-                }`}
-              >
-                {/* Node Header & Drag Bar */}
-                <div
-                  data-node-header={node.id}
-                  onMouseDown={(e) => {
-                    if (mode === 'simulate') return;
-                    e.stopPropagation();
-                    const coords = screenToCanvas(e.clientX, e.clientY);
-                    setDraggedNode({
-                      id: node.id,
-                      offsetX: coords.x - node.position.x,
-                      offsetY: coords.y - node.position.y,
-                    });
-                    onSelectNode(node.id);
-                  }}
-                  className={`p-1.5 px-2 rounded-t-xl border-b flex items-center justify-between cursor-grab active:cursor-grabbing ${
-                    isRed
-                      ? 'bg-rose-950/50 border-rose-800/60'
-                      : isLight
-                      ? 'bg-slate-100/90 border-slate-200'
-                      : 'bg-slate-900/90 border-slate-800'
-                  }`}
-                >
-                  <div className="flex items-center gap-1.5 min-w-0 pr-1">
-                    <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                    <span className={`text-[11px] font-bold truncate ${isLight ? 'text-slate-900' : 'text-slate-100'}`}>
-                      PoE Injector
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-1 shrink-0">
-                    {mode === 'simulate' ? (
-                      <div>
-                        {isRed ? (
-                          <XCircle className="w-3.5 h-3.5 text-rose-500 animate-pulse cursor-pointer" />
-                        ) : isYellow ? (
-                          <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                        ) : (
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                        )}
-                      </div>
-                    ) : (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteNode(node.id);
-                        }}
-                        title="Delete equipment"
-                        className="w-3.5 h-3.5 rounded-full bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white flex items-center justify-center transition-colors text-[9px] font-bold"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Body: Left (Data In) <---> Right (PoE Out) */}
-                <div className="p-2 space-y-1.5 text-[10px]">
-                  <div className="flex items-center justify-between">
-                    {/* Left Port: Data In */}
-                    <div className="flex flex-col items-center">
-                      <span className="text-[9px] font-semibold text-slate-400">DATA IN</span>
-                      <div
-                        data-no-pan="true"
-                        onMouseDown={(e) => {
-                          if (mode === 'simulate') return;
-                          e.stopPropagation();
-                          const coords = screenToCanvas(e.clientX, e.clientY);
-                          setCableDraft({
-                            nodeId: node.id,
-                            portId: 'data_in',
-                            portType: 'rj45',
-                            startX: coords.x,
-                            startY: coords.y,
-                            currentX: coords.x,
-                            currentY: coords.y,
-                          });
-                        }}
-                        onMouseEnter={() => setHoveredPort({ nodeId: node.id, portId: 'data_in', portType: 'rj45' })}
-                        onMouseLeave={() => setHoveredPort(null)}
-                        title="Data In (Left Port, from Switch/Router) - Drag to connect"
-                        className={`w-3.5 h-3.5 mt-0.5 rounded-full border flex items-center justify-center cursor-crosshair transition-transform hover:scale-125 bg-sky-950 text-sky-400 border-sky-800 ${
-                          dataInConnected ? 'ring-2 ring-emerald-500/70' : ''
-                        }`}
-                      >
-                        <div className="w-1 h-1 rounded-full bg-current" />
-                      </div>
-                    </div>
-
-                    {/* Center 48V LED badge */}
-                    <div className="flex flex-col items-center px-1.5 py-0.5 rounded bg-amber-950/40 border border-amber-800/40 text-[9px] text-amber-300">
-                      <div className="flex items-center gap-0.5 font-mono font-bold">
-                        <span>⚡ 48V</span>
-                      </div>
-                      <span className="text-[8px] text-amber-400/80">INLINE</span>
-                    </div>
-
-                    {/* Right Port: PoE Out */}
-                    <div className="flex flex-col items-center">
-                      <span className="text-[9px] font-semibold text-sky-400">PoE OUT</span>
-                      <div
-                        data-no-pan="true"
-                        onMouseDown={(e) => {
-                          if (mode === 'simulate') return;
-                          e.stopPropagation();
-                          const coords = screenToCanvas(e.clientX, e.clientY);
-                          setCableDraft({
-                            nodeId: node.id,
-                            portId: 'poe_out',
-                            portType: 'rj45_poe_out',
-                            startX: coords.x,
-                            startY: coords.y,
-                            currentX: coords.x,
-                            currentY: coords.y,
-                          });
-                        }}
-                        onMouseEnter={() => setHoveredPort({ nodeId: node.id, portId: 'poe_out', portType: 'rj45_poe_out' })}
-                        onMouseLeave={() => setHoveredPort(null)}
-                        title="PoE Out (Right Port, with inline 48V power to AP) - Drag to connect"
-                        className={`w-3.5 h-3.5 mt-0.5 rounded-full border flex items-center justify-center cursor-crosshair transition-transform hover:scale-125 bg-amber-950 text-amber-400 border-amber-800 ${
-                          poeOutConnected ? 'ring-2 ring-emerald-500/70' : ''
-                        }`}
-                      >
-                        <div className="w-1 h-1 rounded-full bg-current" />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Bottom: 220V AC Power In */}
-                  <div className="pt-1 border-t border-slate-800/60 flex items-center justify-between text-[9px]">
-                    <span className="text-slate-400">220V AC Power:</span>
-                    <div
-                      data-no-pan="true"
-                      onMouseDown={(e) => {
-                        if (mode === 'simulate') return;
-                        e.stopPropagation();
-                        const coords = screenToCanvas(e.clientX, e.clientY);
-                        setCableDraft({
-                          nodeId: node.id,
-                          portId: 'pwr_in',
-                          portType: 'ac_in',
-                          startX: coords.x,
-                          startY: coords.y,
-                          currentX: coords.x,
-                          currentY: coords.y,
-                        });
-                      }}
-                      onMouseEnter={() => setHoveredPort({ nodeId: node.id, portId: 'pwr_in', portType: 'ac_in' })}
-                      onMouseLeave={() => setHoveredPort(null)}
-                      title="AC Power In (220V from Mains/UPS) - Drag to connect"
-                      className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center cursor-crosshair transition-transform hover:scale-125 bg-rose-950 text-rose-400 border-rose-800 ${
-                        pwrConnected ? 'ring-2 ring-emerald-500/70' : ''
-                      }`}
-                    >
-                      <div className="w-1 h-1 rounded-full bg-current" />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
-          }
+          const isBeingDragged = draggedNode?.id === node.id;
 
           return (
             <div
@@ -1305,12 +1244,16 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
               }}
               style={{
                 transform: `translate(${node.position.x}px, ${node.position.y}px)`,
-                width: '190px',
+                width: `${NODE_WIDTH}px`,
               }}
-              className={`absolute rounded-xl border backdrop-blur-md shadow-xl transition-all select-none z-20 ${
+              className={`absolute rounded-xl border select-none transition-all z-20 ${
                 isLight
-                  ? 'bg-white/85 text-slate-900 border-slate-300'
-                  : 'bg-slate-900/80 text-slate-100 border-slate-750'
+                  ? isBeingDragged
+                    ? 'bg-white/20 border-sky-500 shadow-md ring-2 ring-sky-400/50 opacity-75'
+                    : 'bg-white/25 hover:bg-white/40 text-slate-900 border-slate-300/80 shadow-xs'
+                  : isBeingDragged
+                  ? 'bg-slate-950/20 border-cyan-400 shadow-cyan-950/30 ring-2 ring-cyan-400/50 opacity-75'
+                  : 'bg-slate-950/25 hover:bg-slate-900/40 text-slate-100 border-slate-700/60 shadow-xs'
               } ${
                 isProjectedTarget
                   ? 'border-rose-500 ring-4 ring-rose-500/50 shadow-rose-950/80 scale-105 animate-pulse'
@@ -1321,26 +1264,37 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
                   : 'hover:border-sky-400/80'
               }`}
             >
-              {/* Node Header & Drag Bar */}
+              {/* Node Header & Drag Bar (Exact 38px height) */}
               <div
                 data-node-header={node.id}
                 onMouseDown={(e) => {
                   if (mode === 'simulate') return;
                   e.stopPropagation();
                   const coords = screenToCanvas(e.clientX, e.clientY);
+                  const parentStruct = structures.find(
+                    (s) =>
+                      node.structureId === s.id ||
+                      (node.position.x + 95 >= s.x &&
+                        node.position.x + 95 <= s.x + s.width &&
+                        node.position.y + 30 >= s.y &&
+                        node.position.y <= s.y + s.height)
+                  );
                   setDraggedNode({
                     id: node.id,
                     offsetX: coords.x - node.position.x,
                     offsetY: coords.y - node.position.y,
+                    initialX: node.position.x,
+                    initialY: node.position.y,
+                    structureId: parentStruct ? parentStruct.id : null,
                   });
                   onSelectNode(node.id);
                 }}
-                className={`p-2.5 rounded-t-xl border-b flex items-center justify-between cursor-grab active:cursor-grabbing ${
+                className={`h-[38px] px-2.5 rounded-t-xl border-b flex items-center justify-between cursor-grab active:cursor-grabbing transition-colors ${
                   isRed
-                    ? 'bg-rose-950/50 border-rose-800/60'
+                    ? 'bg-rose-950/40 border-rose-800/60'
                     : isLight
-                    ? 'bg-slate-100/90 border-slate-200'
-                    : 'bg-slate-900/90 border-slate-800'
+                    ? 'bg-slate-100/40 border-slate-200/80'
+                    : 'bg-slate-900/35 border-slate-800/70'
                 }`}
               >
                 <div className="flex items-center gap-2 min-w-0 pr-1">
@@ -1378,7 +1332,7 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
                         onDeleteNode(node.id);
                       }}
                       title="Delete equipment"
-                      className="w-4 h-4 rounded-full bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white flex items-center justify-center transition-colors text-[10px] font-bold"
+                      className="w-4 h-4 rounded-full bg-slate-800/70 hover:bg-rose-600 text-slate-300 hover:text-white flex items-center justify-center transition-colors text-[10px] font-bold"
                     >
                       ✕
                     </button>
@@ -1386,56 +1340,19 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
                 </div>
               </div>
 
-              {/* Node Details (IP, Grounding quick toggle, Ports) */}
-              <div className="p-2 space-y-1.5 text-[11px]">
+              {/* Node Details (Exact padding & port spacing matching getPortCoordinates) */}
+              <div className="p-2 text-[11px]">
                 {node.network?.ip && (
-                  <div className={`flex items-center justify-between font-mono text-[10px] px-2 py-0.5 rounded border ${
-                    isLight ? 'bg-slate-50 border-slate-200 text-slate-700' : 'bg-slate-950/70 border-slate-800 text-slate-300'
+                  <div className={`h-[20px] mb-1.5 flex items-center justify-between font-mono text-[10px] px-2 rounded border ${
+                    isLight ? 'bg-slate-50/40 border-slate-200/80 text-slate-700' : 'bg-slate-950/40 border-slate-800/70 text-slate-300'
                   }`}>
                     <span className="text-slate-400">IP</span>
                     <span className="font-semibold text-sky-400">{node.network.ip}</span>
                   </div>
                 )}
 
-                {/* Grounding terminal quick fix badge */}
-                {needsGrounding && (
-                  <div className="pt-0.5">
-                    {node.groundingCertified ? (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onUpdateNode(node.id, { groundingCertified: false });
-                        }}
-                        title="Grounding Certified Bonded. Click to toggle."
-                        className="w-full text-[10px] text-emerald-400 bg-emerald-950/70 hover:bg-emerald-900/80 border border-emerald-700/60 px-1.5 py-0.5 rounded flex items-center justify-between font-medium transition-colors"
-                      >
-                        <span className="flex items-center gap-1">
-                          <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                          <span>Ground: Fixed ✓</span>
-                        </span>
-                        <span className="text-[9px] text-emerald-300/70">Certified</span>
-                      </button>
-                    ) : (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onUpdateNode(node.id, { groundingCertified: true });
-                        }}
-                        title="Outdoor ground missing! Click to mark grounding as installed & certified"
-                        className="w-full text-[10px] text-amber-400 bg-amber-950/80 hover:bg-amber-900 border border-amber-600/70 px-1.5 py-0.5 rounded flex items-center justify-between font-medium transition-colors animate-pulse"
-                      >
-                        <span className="flex items-center gap-1">
-                          <AlertTriangle className="w-3 h-3 text-amber-400" />
-                          <span>Fix Ground ✕</span>
-                        </span>
-                        <span className="text-[9px] underline">Click to Fix</span>
-                      </button>
-                    )}
-                  </div>
-                )}
-
                 {/* Ports List & Connect Sockets */}
-                <div className="pt-1 space-y-1">
+                <div className="space-y-1">
                   {spec?.ports.map((port) => {
                     const isPortConnected = cables.some(
                       (c) =>
@@ -1443,20 +1360,22 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
                         (c.toNodeId === node.id && c.toPortId === port.id)
                     );
 
-                    let portBadgeColor = 'bg-sky-950 text-sky-400 border-sky-800';
+                    let portBadgeColor = 'bg-sky-950/80 text-sky-400 border-sky-800';
                     if (port.type === 'ac_in' || port.type === 'ac_out') {
-                      portBadgeColor = 'bg-rose-950 text-rose-400 border-rose-800';
+                      portBadgeColor = 'bg-rose-950/80 text-rose-400 border-rose-800';
                     } else if (port.type === 'fiber_sc') {
-                      portBadgeColor = 'bg-amber-950 text-amber-400 border-amber-800';
+                      portBadgeColor = 'bg-amber-950/80 text-amber-400 border-amber-800';
                     } else if (port.type === 'ground_lug') {
-                      portBadgeColor = 'bg-emerald-950 text-emerald-400 border-emerald-800';
+                      portBadgeColor = 'bg-emerald-950/80 text-emerald-400 border-emerald-800';
+                    } else if (port.type === 'rj45_poe_out' || port.type === 'rj45_poe_in') {
+                      portBadgeColor = 'bg-amber-950/80 text-amber-400 border-amber-800';
                     }
 
                     return (
                       <div
                         key={port.id}
-                        className={`flex items-center justify-between text-[10px] py-0.5 px-1 rounded transition-colors ${
-                          isLight ? 'hover:bg-slate-200/60 text-slate-700' : 'hover:bg-slate-800/50 text-slate-300'
+                        className={`h-[22px] flex items-center justify-between text-[10px] px-1 rounded transition-colors ${
+                          isLight ? 'hover:bg-slate-200/50 text-slate-700' : 'hover:bg-slate-800/40 text-slate-300'
                         }`}
                       >
                         <span className="truncate pr-1">{port.name}</span>
@@ -1466,15 +1385,15 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
                           onMouseDown={(e) => {
                             if (mode === 'simulate') return;
                             e.stopPropagation();
-                            const coords = screenToCanvas(e.clientX, e.clientY);
+                            const portCoords = getPortCoordinates(node.id, port.id);
                             setCableDraft({
                               nodeId: node.id,
                               portId: port.id,
                               portType: port.type,
-                              startX: coords.x,
-                              startY: coords.y,
-                              currentX: coords.x,
-                              currentY: coords.y,
+                              startX: portCoords.x,
+                              startY: portCoords.y,
+                              currentX: portCoords.x,
+                              currentY: portCoords.y,
                             });
                           }}
                           onMouseEnter={() => {
@@ -1488,7 +1407,7 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
                             setHoveredPort(null);
                           }}
                           title={`Port: ${port.name} (${port.type}) - Drag to connect`}
-                          className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center cursor-crosshair transition-transform hover:scale-125 ${portBadgeColor} ${
+                          className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center cursor-crosshair transition-transform hover:scale-125 shrink-0 ${portBadgeColor} ${
                             isPortConnected ? 'ring-2 ring-emerald-500/70 ring-offset-1 ring-offset-slate-900' : ''
                           }`}
                         >
@@ -1547,23 +1466,6 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
               <Settings className="w-3.5 h-3.5 text-sky-400" />
               <span>Open Inspector / IP Config</span>
             </button>
-
-            {needsGrounding && clickedNode && (
-              <button
-                onClick={() => {
-                  onUpdateNode(clickedNode.id, {
-                    groundingCertified: !clickedNode.groundingCertified,
-                  });
-                  setNodeContextMenu(null);
-                }}
-                className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-slate-800 flex items-center gap-2 text-emerald-300"
-              >
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                <span>
-                  {clickedNode.groundingCertified ? 'Remove Ground Certification' : 'Mark Grounding Certified/Fixed'}
-                </span>
-              </button>
-            )}
 
             {onDuplicateNode && (
               <button
@@ -1650,7 +1552,7 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
                   Change Wire Type
                 </label>
                 <div className="grid grid-cols-2 gap-1.5">
-                  {(['ethernet', 'fiber', 'ac_power', 'grounding'] as CableType[]).map((t) => (
+                  {(['ethernet', 'fiber', 'ac_power'] as CableType[]).map((t) => (
                     <button
                       key={t}
                       onClick={() => {
@@ -1666,9 +1568,7 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
                         ? 'Cat6 LAN'
                         : t === 'fiber'
                         ? 'Fiber Optic'
-                        : t === 'ac_power'
-                        ? '220V AC'
-                        : 'Grounding'}
+                        : '220V AC'}
                     </button>
                   ))}
                 </div>
@@ -1773,10 +1673,6 @@ export const NetworkCanvas: React.FC<NetworkCanvasProps> = ({
           <div className="flex items-center gap-1.5">
             <span className="w-3 h-0.5 bg-amber-400 rounded" />
             <span className="text-slate-300 font-medium">Fiber Optic</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="w-3 h-0.5 border-b border-dashed border-emerald-400" />
-            <span className="text-slate-300 font-medium">Grounding</span>
           </div>
         </div>
       </div>

@@ -52,10 +52,10 @@ export default function App() {
       const saved = localStorage.getItem(AUTO_SAVE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed.cables) return parsed.cables;
+        if (parsed.cables) return (parsed.cables as CableRun[]).filter((c) => c.type !== 'grounding');
       }
     } catch {}
-    return defaultPreset.cables;
+    return defaultPreset.cables.filter((c) => c.type !== 'grounding');
   });
 
   const [projectName, setProjectName] = useState<string>(() => {
@@ -283,17 +283,55 @@ export default function App() {
 
     if (dx !== 0 || dy !== 0) {
       setNodes((prev) =>
-        prev.map((n) =>
-          n.structureId === id
-            ? {
-                ...n,
-                position: {
-                  x: n.position.x + dx,
-                  y: n.position.y + dy,
-                },
-              }
-            : n
-        )
+        prev.map((n) => {
+          const isInside =
+            n.structureId === id ||
+            (n.position.x + 95 >= existing.x &&
+              n.position.x + 95 <= existing.x + existing.width &&
+              n.position.y + 30 >= existing.y &&
+              n.position.y <= existing.y + existing.height);
+
+          if (isInside) {
+            return {
+              ...n,
+              structureId: id,
+              position: {
+                x: n.position.x + dx,
+                y: n.position.y + dy,
+              },
+            };
+          }
+          return n;
+        })
+      );
+    }
+  };
+
+  // Group movement: Move structure together with all equipment nodes inside it
+  const handleMoveStructureWithNodes = (
+    structureId: string,
+    newX: number,
+    newY: number,
+    nodePositions: { id: string; x: number; y: number }[]
+  ) => {
+    setStructures((prev) =>
+      prev.map((s) => (s.id === structureId ? { ...s, x: newX, y: newY } : s))
+    );
+
+    if (nodePositions && nodePositions.length > 0) {
+      const posMap = new Map(nodePositions.map((np) => [np.id, np]));
+      setNodes((prev) =>
+        prev.map((n) => {
+          const updated = posMap.get(n.id);
+          if (updated) {
+            return {
+              ...n,
+              structureId,
+              position: { x: updated.x, y: updated.y },
+            };
+          }
+          return n;
+        })
       );
     }
   };
@@ -494,7 +532,7 @@ export default function App() {
   const handleLoadSavedProject = (project: SavedProject) => {
     setStructures(project.structures);
     setNodes(project.nodes);
-    setCables(project.cables);
+    setCables((project.cables || []).filter((c) => c.type !== 'grounding'));
     setProjectName(project.name);
     setHasBeenSavedOnce(true);
     setSelectedNodeId(null);
@@ -571,7 +609,7 @@ export default function App() {
   const handleLoadPreset = (preset: PresetTopology) => {
     setStructures(preset.structures);
     setNodes(preset.nodes);
-    setCables(preset.cables);
+    setCables((preset.cables || []).filter((c) => c.type !== 'grounding'));
     setProjectName(preset.name);
     setSelectedNodeId(null);
     setSelectedCableId(null);
@@ -607,7 +645,7 @@ export default function App() {
         if (json.structures && json.nodes && json.cables) {
           setStructures(json.structures);
           setNodes(json.nodes);
-          setCables(json.cables);
+          setCables((json.cables as CableRun[]).filter((c) => c.type !== 'grounding'));
           if (json.projectName) setProjectName(json.projectName);
           setSelectedNodeId(null);
           setSelectedCableId(null);
@@ -684,6 +722,7 @@ export default function App() {
           onDeleteNode={handleDeleteNode}
           onDuplicateNode={handleDuplicateNode}
           onUpdateStructure={handleUpdateStructure}
+          onMoveStructureWithNodes={handleMoveStructureWithNodes}
           onDeleteStructure={handleDeleteStructure}
           onAddCable={handleAddCable}
           onUpdateCable={handleUpdateCable}

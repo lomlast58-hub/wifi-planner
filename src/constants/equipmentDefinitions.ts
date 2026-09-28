@@ -300,9 +300,9 @@ export const EQUIPMENT_CATALOG: Record<EquipmentType, EquipmentSpec> = {
   // Standalone Physical PoE Injector
   poe_injector: {
     type: 'poe_injector',
-    name: 'Standalone PoE Injector (Physical Box)',
+    name: 'Standalone PoE Injector',
     category: 'power',
-    description: 'Compact physical PoE injector adapter with Data In on the left, PoE Out on the right, and 220V AC input.',
+    description: 'Inline PoE injector adapter with Data In, PoE Out, and 220V AC input on the right side.',
     networkRole: 'Provides 48V inline power injection to Access Points from non-PoE switches or routers.',
     defaultPower: {
       requiresPower: true,
@@ -312,8 +312,8 @@ export const EQUIPMENT_CATALOG: Record<EquipmentType, EquipmentSpec> = {
     },
     hasNetworkConfig: false,
     ports: [
-      { id: 'data_in', name: 'Data In (Left Port)', type: 'rj45', label: 'Data In' },
-      { id: 'poe_out', name: 'PoE Out (Right Port)', type: 'rj45_poe_out', label: 'PoE Out' },
+      { id: 'data_in', name: 'Data In (LAN)', type: 'rj45', label: 'Data In' },
+      { id: 'poe_out', name: 'PoE Out (+48V Power)', type: 'rj45_poe_out', label: 'PoE Out' },
       { id: 'pwr_in', name: '220V AC Power In', type: 'ac_in', label: 'AC In' },
     ],
     estimatedCostPhp: 1800,

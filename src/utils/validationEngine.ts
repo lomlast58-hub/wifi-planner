@@ -313,32 +313,8 @@ export function validateNetwork(
     }
   });
 
-  // 4. Outdoor Grounding & Surge Protection Validation
-  nodes.forEach((node) => {
-    const vNode = nodeMap.get(node.id)!;
-    const spec = EQUIPMENT_CATALOG[node.type];
-
-    if (spec.isOutdoor) {
-      // If user marked grounding as certified or fixed on site, consider nominal
-      if (node.groundingCertified) {
-        return;
-      }
-
-      // Must have grounding wire attached
-      const grounds = adjGround.get(node.id) || [];
-      if (grounds.length === 0) {
-        vNode.status = 'red';
-        vNode.faults.push({
-          code: 'MISSING_GROUNDING',
-          title: `Missing Earth Grounding (${vNode.label})`,
-          message: `${vNode.label} is mounted outdoors in an exposed area and lacks an Earth Grounding wire.`,
-          why: 'In the Philippines tropical climate, frequent thunderstorms generate electrostatic build-up that can destroy equipment.',
-          fix: 'Attach a Green Grounding Cable from this device’s ground terminal to an earth ground or surge arrester.',
-          severity: 'error',
-        });
-      }
-    }
-  });
+  // 4. Outdoor Grounding & Surge Protection Validation (Grounding line removed as requested; outdoor devices nominal)
+  // No MISSING_GROUNDING faults generated
 
   // 5. Data Connectivity & Path to ISP / Router
   // Find ISP source (isp_nap, isp_pldt, isp_globe, isp_converge, or vsat_terminal)

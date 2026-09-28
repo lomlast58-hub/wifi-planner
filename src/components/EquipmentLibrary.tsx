@@ -240,7 +240,7 @@ export const EquipmentLibrary: React.FC<EquipmentLibraryProps> = ({
                   )}
                   {eq.type === 'poe_injector' && (
                     <span className="text-amber-300 bg-amber-950/70 border border-amber-700/60 px-1.5 py-0.5 rounded font-medium">
-                      PoE Injector (Left/Right Ports)
+                      PoE Injector (Right-side Ports)
                     </span>
                   )}
                   {eq.type === 'extension_socket_2p' && (

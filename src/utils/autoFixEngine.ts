@@ -103,37 +103,7 @@ export function findRecommendedFix(
     }
   }
 
-  // 3. MISSING_GROUNDING
-  if (faultCode === 'MISSING_GROUNDING') {
-    // Check if there is an in-canvas surge arrester
-    const arrester = nodes.find((n) => n.type === 'surge_arrester');
-    if (arrester) {
-      return {
-        targetNodeId,
-        fromNodeId: targetNodeId,
-        fromPortId: 'gnd',
-        toNodeId: arrester.id,
-        toPortId: 'gnd',
-        cableType: 'grounding',
-        title: `Auto-Fix: Bond Grounding to ${arrester.label}`,
-        description: `Connect a green grounding cable from ${targetNode.label} to ${arrester.label}.`,
-        actionText: 'Apply Grounding Cable',
-        fixType: 'cable',
-      };
-    }
-
-    // Default option: Certify building ground bond
-    return {
-      targetNodeId,
-      cableType: 'grounding',
-      title: 'Auto-Fix: Mark Grounding Terminal as Certified Fixed',
-      description: `Verify that ${targetNode.label} is grounded via building structural steel/copper rod. Click to mark grounding as certified fixed.`,
-      actionText: 'Certify Grounding Fix',
-      fixType: 'ground_certify',
-    };
-  }
-
-  // 4. IP_SUBNET_MISMATCH or GATEWAY_NOT_FOUND or IP_SYNTAX_INVALID
+  // 3. IP_SUBNET_MISMATCH or GATEWAY_NOT_FOUND or IP_SYNTAX_INVALID
   if (
     faultCode === 'IP_SUBNET_MISMATCH' ||
     faultCode === 'GATEWAY_NOT_FOUND' ||

@@ -243,20 +243,6 @@ export const TopBar: React.FC<TopBarProps> = ({
           )}
         </div>
 
-        {/* AI Assistant Button */}
-        <button
-          onClick={onOpenAiAssistant}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-sky-400 bg-sky-950/40 hover:bg-sky-900/60 border border-sky-700/50 rounded-lg transition-colors"
-        >
-          <Sparkles className="w-3.5 h-3.5 text-sky-400" />
-          <span>AI Specialist</span>
-          {summary.redCount > 0 && (
-            <span className="w-4 h-4 rounded-full bg-rose-500 text-white text-[10px] flex items-center justify-center font-bold animate-pulse">
-              {summary.redCount}
-            </span>
-          )}
-        </button>
-
         {/* Quick Save Project Button */}
         <button
           onClick={handleSaveClick}

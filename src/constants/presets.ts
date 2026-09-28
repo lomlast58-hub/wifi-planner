@@ -314,18 +314,6 @@ export const PRESET_TOPOLOGIES: PresetTopology[] = [
         status: 'green',
         faults: [],
       },
-      // Grounding wire on outdoor AP
-      {
-        id: 'c-gnd-1',
-        type: 'grounding',
-        fromNodeId: 'arrester-1',
-        fromPortId: 'gnd',
-        toNodeId: 'ap-outdoor-1',
-        toPortId: 'gnd',
-        lengthMeters: 3,
-        status: 'green',
-        faults: [],
-      },
       // Wi-Fi links to clients
       {
         id: 'c-wifi-1',
@@ -519,17 +507,6 @@ export const PRESET_TOPOLOGIES: PresetTopology[] = [
         toNodeId: 'ap-waiting',
         toPortId: 'poe_in',
         lengthMeters: 40,
-        status: 'green',
-        faults: [],
-      },
-      {
-        id: 'c-gida-gnd',
-        type: 'grounding',
-        fromNodeId: 'ap-waiting',
-        fromPortId: 'gnd',
-        toNodeId: 'arrester-rhu',
-        toPortId: 'gnd',
-        lengthMeters: 3,
         status: 'green',
         faults: [],
       },

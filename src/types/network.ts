@@ -30,9 +30,9 @@ export type EquipmentType =
   | 'wireless_bridge'
   | 'client_device';
 
-export type CableType = 'ac_power' | 'ethernet' | 'fiber' | 'grounding';
+export type CableType = 'ac_power' | 'ethernet' | 'fiber';
 
-export type PortType = 'ac_in' | 'ac_out' | 'rj45' | 'rj45_poe_in' | 'rj45_poe_out' | 'fiber_sc' | 'ground_lug';
+export type PortType = 'ac_in' | 'ac_out' | 'rj45' | 'rj45_poe_in' | 'rj45_poe_out' | 'fiber_sc';
 
 export type NodeStatus = 'green' | 'yellow' | 'red' | 'idle';
 
@@ -127,7 +127,6 @@ export type FaultCode =
   | 'POE_BUDGET_EXCEEDED'
   | 'DISTANCE_EXCEEDED'
   | 'PORT_MEDIA_MISMATCH'
-  | 'MISSING_GROUNDING'
   | 'MISSING_SURGE_PROTECTION'
   | 'NO_DATA_UPLINK'
   | 'IP_SYNTAX_INVALID'

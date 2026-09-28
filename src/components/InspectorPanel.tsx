@@ -141,12 +141,12 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
             <label className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">
               Change Cable Wire Type
             </label>
-            <div className="grid grid-cols-2 gap-1.5">
-              {(['ethernet', 'fiber', 'ac_power', 'grounding'] as const).map((t) => (
+            <div className="grid grid-cols-3 gap-1.5">
+              {(['ethernet', 'fiber', 'ac_power'] as const).map((t) => (
                 <button
                   key={t}
                   onClick={() => onUpdateCable(selectedCable.id, { type: t })}
-                  className={`px-2 py-1 rounded text-[10px] font-medium transition-colors text-left truncate ${
+                  className={`px-2 py-1 rounded text-[10px] font-medium transition-colors text-center truncate ${
                     selectedCable.type === t
                       ? 'bg-sky-600 text-white'
                       : 'bg-slate-950 text-slate-300 hover:bg-slate-800 border border-slate-800'
@@ -156,9 +156,7 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
                     ? 'Cat6 Ethernet'
                     : t === 'fiber'
                     ? 'Fiber Optic'
-                    : t === 'ac_power'
-                    ? '220V AC Power'
-                    : 'Grounding Wire'}
+                    : '220V AC Power'}
                 </button>
               ))}
             </div>
